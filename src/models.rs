@@ -56,6 +56,7 @@ pub struct TagNode {
     pub depth: usize,
     pub direct_count: usize,
     pub total_count: usize,
+    #[serde(skip_serializing, default)]
     pub document_ids: Vec<String>,
     pub children: Vec<TagNode>,
 }

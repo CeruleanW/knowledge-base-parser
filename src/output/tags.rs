@@ -4,6 +4,9 @@ use std::path::Path;
 use crate::models::{TagNode, TagsExport};
 
 pub fn write_tags(tags: &TagsExport, dir: &Path) -> Result<()> {
+    if tags.sources.iter().all(|s| s.tree.is_empty()) {
+        return Ok(());
+    }
     write_json(tags, dir)?;
     write_markdown(tags, dir)?;
     Ok(())

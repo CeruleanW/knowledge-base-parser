@@ -40,7 +40,8 @@ fn build_source_tags(source: &SourceInfo, docs: &[&Document]) -> SourceTags {
         }
     }
 
-    let tree = roots.into_values().map(finalize).collect();
+    let mut tree: Vec<TagNode> = roots.into_values().map(finalize).collect();
+    sort_by_frequency(&mut tree);
 
     SourceTags {
         source_name: source.name.clone(),
@@ -96,7 +97,8 @@ fn finalize(b: Builder) -> TagNode {
         .filter(|id| seen.insert(id.clone()))
         .collect();
 
-    let children: Vec<TagNode> = b.children.into_values().map(finalize).collect();
+    let mut children: Vec<TagNode> = b.children.into_values().map(finalize).collect();
+    sort_by_frequency(&mut children);
 
     let mut all_doc_ids: HashSet<String> = direct_doc_ids.iter().cloned().collect();
     for c in &children {
@@ -112,6 +114,10 @@ fn finalize(b: Builder) -> TagNode {
         document_ids: direct_doc_ids,
         children,
     }
+}
+
+fn sort_by_frequency(nodes: &mut [TagNode]) {
+    nodes.sort_by(|a, b| b.total_count.cmp(&a.total_count).then_with(|| a.name.cmp(&b.name)));
 }
 
 fn collect_doc_ids(node: &TagNode, out: &mut HashSet<String>) {

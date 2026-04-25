@@ -39,13 +39,15 @@ impl ScrivenerParser {
         let xml_doc = roxmltree::Document::parse(&xml_content)
             .map_err(|e| anyhow!("Failed to parse .scrivx XML: {}", e))?;
 
-        let binder = xml_doc
-            .root_element()
+        let root = xml_doc.root_element();
+        let binder = root
             .children()
             .find(|n| n.has_tag_name("Binder"))
             .ok_or_else(|| anyhow!("No <Binder> element in {:?}", scrivx_path))?;
 
-        let mut items: Vec<(String, String)> = Vec::new();
+        let tables = build_project_tables(root);
+
+        let mut items: Vec<Item> = Vec::new();
         for top_item in binder.children().filter(|n| n.has_tag_name("BinderItem")) {
             collect_text_items(top_item, &mut items);
         }
@@ -53,8 +55,8 @@ impl ScrivenerParser {
         let mut documents = Vec::new();
         let mut used_ids: HashSet<String> = HashSet::new();
 
-        for (id, title) in items {
-            let content_path = match find_content_file(&self.scriv_path, &id) {
+        for item in items {
+            let content_path = match find_content_file(&self.scriv_path, &item.id) {
                 Some(p) => p,
                 None => continue,
             };
@@ -63,18 +65,46 @@ impl ScrivenerParser {
             let summary = take_words(&plain_text, summary_words);
             let word_count = plain_text.split_whitespace().count();
 
-            let base_id = format!("{}-{}", slugify(&project_name), slugify(&title));
+            let base_id = format!("{}-{}", slugify(&project_name), slugify(&item.title));
             let doc_id = unique_id(base_id, &mut used_ids);
+
+            let mut tags: Vec<String> = Vec::new();
+            let mut seen_tags: HashSet<String> = HashSet::new();
+            for kid in &item.keyword_ids {
+                if let Some(path) = tables.keyword_paths.get(kid) {
+                    if seen_tags.insert(path.clone()) {
+                        tags.push(path.clone());
+                    }
+                }
+            }
+            if let Some(lid) = &item.label_id {
+                if let Some(name) = tables.labels.get(lid) {
+                    let t = format!("label/{}", name);
+                    if seen_tags.insert(t.clone()) {
+                        tags.push(t);
+                    }
+                }
+            }
+
+            let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
+            if let Some(sid) = &item.status_id {
+                if let Some(name) = tables.statuses.get(sid) {
+                    metadata.insert("status".to_string(), serde_json::Value::String(name.clone()));
+                }
+            }
+            for (k, v) in &item.custom {
+                metadata.insert(k.clone(), serde_json::Value::String(v.clone()));
+            }
 
             documents.push(Document {
                 id: doc_id,
                 source_type: SourceType::ScrivenerProject,
                 source_name: project_name.clone(),
-                title,
-                path: format!("Files/Data/{}", id),
-                tags: Vec::new(),
+                title: item.title,
+                path: format!("Files/Data/{}", item.id),
+                tags,
                 generated_tags: Vec::new(),
-                metadata: HashMap::new(),
+                metadata,
                 outbound_links: Vec::new(),
                 summary,
                 word_count,
@@ -93,10 +123,25 @@ fn find_scrivx(scriv_dir: &Path) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("No .scrivx file found in {:?}", scriv_dir))
 }
 
-fn collect_text_items(node: roxmltree::Node, items: &mut Vec<(String, String)>) {
+struct Item {
+    id: String,
+    title: String,
+    keyword_ids: Vec<String>,
+    label_id: Option<String>,
+    status_id: Option<String>,
+    custom: Vec<(String, String)>,
+}
+
+#[derive(Default)]
+struct ProjectTables {
+    keyword_paths: HashMap<String, String>,
+    labels: HashMap<String, String>,
+    statuses: HashMap<String, String>,
+}
+
+fn collect_text_items(node: roxmltree::Node, items: &mut Vec<Item>) {
     let is_text = node.attribute("Type") == Some("Text");
     if is_text {
-        // Try both "UUID" and "ID" attributes (Scrivener versions differ)
         let id = node
             .attribute("ID")
             .or_else(|| node.attribute("UUID"))
@@ -109,13 +154,138 @@ fn collect_text_items(node: roxmltree::Node, items: &mut Vec<(String, String)>) 
             .unwrap_or("Untitled")
             .to_string();
         if !id.is_empty() {
-            items.push((id, title));
+            items.push(Item {
+                id,
+                title,
+                keyword_ids: extract_keyword_ids(node),
+                label_id: read_metadata_text(node, "LabelID"),
+                status_id: read_metadata_text(node, "StatusID"),
+                custom: extract_custom_metadata(node),
+            });
         }
     }
-    // Recurse into Children regardless of type
     if let Some(children_node) = node.children().find(|n| n.has_tag_name("Children")) {
         for child in children_node.children().filter(|n| n.has_tag_name("BinderItem")) {
             collect_text_items(child, items);
+        }
+    }
+}
+
+fn extract_keyword_ids(item: roxmltree::Node) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(kws) = item.children().find(|n| n.has_tag_name("Keywords")) {
+        for kid in kws.children().filter(|n| n.has_tag_name("KeywordID")) {
+            if let Some(t) = kid.text() {
+                let trimmed = t.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn read_metadata_text(item: roxmltree::Node, tag: &str) -> Option<String> {
+    let md = item.children().find(|n| n.has_tag_name("MetaData"))?;
+    md.children()
+        .find(|n| n.has_tag_name(tag))
+        .and_then(|n| n.text())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn extract_custom_metadata(item: roxmltree::Node) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let md = match item.children().find(|n| n.has_tag_name("MetaData")) {
+        Some(n) => n,
+        None => return out,
+    };
+    let cmd = match md.children().find(|n| n.has_tag_name("CustomMetaData")) {
+        Some(n) => n,
+        None => return out,
+    };
+    for entry in cmd.children().filter(|n| n.has_tag_name("MetaDataItem")) {
+        let field_id = entry
+            .children()
+            .find(|n| n.has_tag_name("FieldID"))
+            .and_then(|n| n.text())
+            .map(|s| s.trim().to_string());
+        let value = entry
+            .children()
+            .find(|n| n.has_tag_name("Value"))
+            .and_then(|n| n.text())
+            .map(|s| s.trim().to_string());
+        if let (Some(k), Some(v)) = (field_id, value) {
+            if !k.is_empty() && !v.is_empty() {
+                out.push((k, v));
+            }
+        }
+    }
+    out
+}
+
+fn build_project_tables(root: roxmltree::Node) -> ProjectTables {
+    let mut tables = ProjectTables::default();
+
+    if let Some(kw_root) = root.children().find(|n| n.has_tag_name("Keywords")) {
+        collect_keyword_paths(kw_root, "", &mut tables.keyword_paths);
+    }
+
+    if let Some(ls) = root.children().find(|n| n.has_tag_name("LabelSettings")) {
+        if let Some(labels) = ls.children().find(|n| n.has_tag_name("Labels")) {
+            for label in labels.children().filter(|n| n.has_tag_name("Label")) {
+                if let (Some(id), Some(text)) = (label.attribute("ID"), label.text()) {
+                    let title = text.trim();
+                    if !title.is_empty() {
+                        tables.labels.insert(id.to_string(), title.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(ss) = root.children().find(|n| n.has_tag_name("StatusSettings")) {
+        if let Some(items) = ss.children().find(|n| n.has_tag_name("StatusItems")) {
+            for st in items.children().filter(|n| n.has_tag_name("Status")) {
+                if let (Some(id), Some(text)) = (st.attribute("ID"), st.text()) {
+                    let title = text.trim();
+                    if !title.is_empty() {
+                        tables.statuses.insert(id.to_string(), title.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    tables
+}
+
+fn collect_keyword_paths(
+    node: roxmltree::Node,
+    parent_path: &str,
+    out: &mut HashMap<String, String>,
+) {
+    for kw in node.children().filter(|n| n.has_tag_name("Keyword")) {
+        let id = kw.attribute("ID").unwrap_or("").to_string();
+        let title = kw
+            .children()
+            .find(|n| n.has_tag_name("Title"))
+            .and_then(|n| n.text())
+            .map(|s| s.trim().replace('/', "-"))
+            .unwrap_or_default();
+        let path = if parent_path.is_empty() {
+            title.clone()
+        } else if title.is_empty() {
+            parent_path.to_string()
+        } else {
+            format!("{}/{}", parent_path, title)
+        };
+        if !id.is_empty() && !title.is_empty() {
+            out.insert(id, path.clone());
+        }
+        if let Some(children_node) = kw.children().find(|n| n.has_tag_name("Children")) {
+            collect_keyword_paths(children_node, &path, out);
         }
     }
 }

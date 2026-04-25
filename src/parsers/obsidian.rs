@@ -227,15 +227,20 @@ fn extract_yaml_tags(v: &serde_yaml::Value) -> Vec<String> {
                 serde_yaml::Value::String(s) => s.clone(),
                 other => format!("{:?}", other),
             })
-            .filter(|s| !s.is_empty())
+            .filter_map(normalize_tag)
             .collect(),
         serde_yaml::Value::String(s) => s
             .split(',')
-            .map(|t| t.trim().to_string())
-            .filter(|s| !s.is_empty())
+            .map(|t| t.to_string())
+            .filter_map(normalize_tag)
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn normalize_tag(s: String) -> Option<String> {
+    let t = s.trim().trim_start_matches('#').trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
 }
 
 fn yaml_to_json(v: serde_yaml::Value) -> serde_json::Value {
