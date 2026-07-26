@@ -15,7 +15,12 @@
       "Bash(find /knowledge-base/obsidian/personal/ -name \"*.md\" ! -path \"*/journals/*\" ! -path \"*/templates/*\" -exec wc -l {} +)",
       "Bash(find /knowledge-base/obsidian/personal/inbox/ /knowledge-base/obsidian/personal/pages/ -name \"*.md\" -exec wc -l {} +)",
       "Bash(awk '$1 <= 2')",
-      "Bash(awk '$1 >= 3 && $1 <= 5')"
+      "Bash(awk '$1 >= 3 && $1 <= 5')",
+      "Bash(./target/release/kbparser --vault /knowledge-base/obsidian/personal --output /common/artifacts/context/obsidian-personal)",
+      "Bash(grep -v ':0$')",
+      "Bash(sort -t: -k2 -n -r)",
+      "Bash(awk -F: '{s+=$2} END {print \"Open: \"s}')",
+      "Bash(awk -F: '{s+=$2} END {print \"Done: \"s}')"
     ]
   }
 }

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "references": {
+    "kb": {
+      "path": "/common/artifacts/context",
+      "description": "Parsed knowledge base context for LLM consumption. Per-source subdirectories (obsidian-it, obsidian-personal, scrivener-deland, scrivener-短篇写作, scrivener-超能力者) each contain context.json, context.md, tags.json, tags.md. Use for personal-notes context, document summaries, tag trees, and the note link graph. Run the kbparse tool to refresh these files after the source vaults/projects change."
+    }
+  }
+}
