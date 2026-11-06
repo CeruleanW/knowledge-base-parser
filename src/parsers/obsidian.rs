@@ -180,14 +180,14 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 fn extract_frontmatter_data(
     yaml_str: &str,
 ) -> (Option<String>, Vec<String>, HashMap<String, serde_json::Value>) {
-    let value: serde_yaml::Value =
-        match serde_yaml::from_str(yaml_str) {
+    let value: serde_yaml_ng::Value =
+        match serde_yaml_ng::from_str(yaml_str) {
             Ok(v) => v,
             Err(_) => return (None, Vec::new(), HashMap::new()),
         };
 
     let mapping = match &value {
-        serde_yaml::Value::Mapping(m) => m,
+        serde_yaml_ng::Value::Mapping(m) => m,
         _ => return (None, Vec::new(), HashMap::new()),
     };
 
@@ -219,17 +219,17 @@ fn extract_frontmatter_data(
     (title, tags, metadata)
 }
 
-fn extract_yaml_tags(v: &serde_yaml::Value) -> Vec<String> {
+fn extract_yaml_tags(v: &serde_yaml_ng::Value) -> Vec<String> {
     match v {
-        serde_yaml::Value::Sequence(seq) => seq
+        serde_yaml_ng::Value::Sequence(seq) => seq
             .iter()
             .map(|item| match item {
-                serde_yaml::Value::String(s) => s.clone(),
+                serde_yaml_ng::Value::String(s) => s.clone(),
                 other => format!("{:?}", other),
             })
             .filter_map(normalize_tag)
             .collect(),
-        serde_yaml::Value::String(s) => s
+        serde_yaml_ng::Value::String(s) => s
             .split(',')
             .map(|t| t.to_string())
             .filter_map(normalize_tag)
@@ -243,11 +243,11 @@ fn normalize_tag(s: String) -> Option<String> {
     if t.is_empty() { None } else { Some(t.to_string()) }
 }
 
-fn yaml_to_json(v: serde_yaml::Value) -> serde_json::Value {
+fn yaml_to_json(v: serde_yaml_ng::Value) -> serde_json::Value {
     match v {
-        serde_yaml::Value::Null => serde_json::Value::Null,
-        serde_yaml::Value::Bool(b) => serde_json::Value::Bool(b),
-        serde_yaml::Value::Number(n) => {
+        serde_yaml_ng::Value::Null => serde_json::Value::Null,
+        serde_yaml_ng::Value::Bool(b) => serde_json::Value::Bool(b),
+        serde_yaml_ng::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 serde_json::json!(i)
             } else if let Some(f) = n.as_f64() {
@@ -256,11 +256,11 @@ fn yaml_to_json(v: serde_yaml::Value) -> serde_json::Value {
                 serde_json::Value::Null
             }
         }
-        serde_yaml::Value::String(s) => serde_json::Value::String(s),
-        serde_yaml::Value::Sequence(seq) => {
+        serde_yaml_ng::Value::String(s) => serde_json::Value::String(s),
+        serde_yaml_ng::Value::Sequence(seq) => {
             serde_json::Value::Array(seq.into_iter().map(yaml_to_json).collect())
         }
-        serde_yaml::Value::Mapping(map) => serde_json::Value::Object(
+        serde_yaml_ng::Value::Mapping(map) => serde_json::Value::Object(
             map.into_iter()
                 .filter_map(|(k, v)| k.as_str().map(|s| (s.to_owned(), yaml_to_json(v))))
                 .collect(),
@@ -329,4 +329,89 @@ fn extract_wikilinks(body: &str) -> Vec<String> {
     }
 
     links
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_frontmatter_from_body() {
+        let input = "---\ntitle: Hello\ntags: [rust, yaml]\n---\n# Body\n";
+        let (yaml, body) = split_frontmatter(input);
+        assert_eq!(yaml, Some("title: Hello\ntags: [rust, yaml]"));
+        assert_eq!(body, "# Body\n");
+    }
+
+    #[test]
+    fn content_without_frontmatter_is_all_body() {
+        let input = "# Just a note\n";
+        let (yaml, body) = split_frontmatter(input);
+        assert_eq!(yaml, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn unclosed_frontmatter_is_treated_as_body() {
+        let input = "---\ntitle: Broken\n";
+        let (yaml, body) = split_frontmatter(input);
+        assert_eq!(yaml, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn extracts_title_tags_and_metadata() {
+        let yaml = r##"
+title: My Note
+tags: [rust, "#yaml", " spaced "]
+author: Jane
+draft: false
+count: 3
+nested:
+  key: value
+list: [1, 2]
+empty: null
+"##;
+        let (title, tags, metadata) = extract_frontmatter_data(yaml);
+
+        assert_eq!(title.as_deref(), Some("My Note"));
+        assert_eq!(tags, vec!["rust", "yaml", "spaced"]);
+        assert_eq!(metadata["author"], serde_json::json!("Jane"));
+        assert_eq!(metadata["draft"], serde_json::json!(false));
+        assert_eq!(metadata["count"], serde_json::json!(3));
+        assert_eq!(metadata["nested"], serde_json::json!({"key": "value"}));
+        assert_eq!(metadata["list"], serde_json::json!([1, 2]));
+        assert!(metadata.contains_key("empty"));
+        assert_eq!(metadata["empty"], serde_json::Value::Null);
+        assert!(!metadata.contains_key("title"));
+        assert!(!metadata.contains_key("tags"));
+    }
+
+    #[test]
+    fn accepts_comma_separated_tags_string() {
+        let (_, tags, _) = extract_frontmatter_data("tags: \"rust, #yaml, cli\"\n");
+        assert_eq!(tags, vec!["rust", "yaml", "cli"]);
+    }
+
+    #[test]
+    fn invalid_yaml_yields_defaults() {
+        let (title, tags, metadata) = extract_frontmatter_data("title: [unclosed\n");
+        assert_eq!(title, None);
+        assert!(tags.is_empty());
+        assert!(metadata.is_empty());
+    }
+
+    #[test]
+    fn non_mapping_yaml_yields_defaults() {
+        let (title, tags, metadata) = extract_frontmatter_data("- just\n- a list\n");
+        assert_eq!(title, None);
+        assert!(tags.is_empty());
+        assert!(metadata.is_empty());
+    }
+
+    #[test]
+    fn inline_tags_skip_fenced_code_blocks() {
+        let body = "#tag one\n```\n#not-a-tag\n```\n##heading #two\n";
+        assert_eq!(extract_inline_tags(body), vec!["tag", "two"]);
+    }
 }
